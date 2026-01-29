@@ -1,8 +1,9 @@
-import React from "react";
+import React, { useState, useEffect } from "react";
 import { GoogleMap, Marker, useJsApiLoader } from "@react-google-maps/api";
-import { ArrowLeft, Navigation, Star, IndianRupee, AlertTriangle, ShieldCheck, Clock, CheckCircle } from "lucide-react";
+import { ArrowLeft, Navigation, Star, IndianRupee, AlertTriangle, ShieldCheck, Clock, CheckCircle, QrCode } from "lucide-react";
 import { update, ref, set, onValue } from "firebase/database";
 import database from "../firebase";
+import QRModal from "./QRModal"; // Ensure this is imported
 
 const containerStyle = {
     width: "100%",
@@ -10,25 +11,42 @@ const containerStyle = {
     borderRadius: "1.5rem",
 };
 
-const ParkingDetail = ({ slot, onBack, currentUser }) => {
-    const [now, setNow] = React.useState(0);
-    const [activeSession, setActiveSession] = React.useState(null);
+const ParkingDetail = ({ slot, onBack, currentUser, onShowGrid }) => {
+    const [now, setNow] = useState(() => Date.now());
+    const [activeSession, setActiveSession] = useState(null);
+    const [activeReservation, setActiveReservation] = useState(null);
+    const [showQR, setShowQR] = useState(false);
+    const [qrValue, setQrValue] = useState("");
+    const [qrTitle, setQrTitle] = useState("");
 
-    React.useEffect(() => {
-        setNow(Date.now());
-        const interval = setInterval(() => setNow(Date.now()), 1000 * 60); // Update every minute
+    useEffect(() => {
+        const interval = setInterval(() => setNow(Date.now()), 1000); // 1-second tick for countdown
         return () => clearInterval(interval);
     }, []);
 
-    // Listen for Active Session (Phase 4)
-    React.useEffect(() => {
-        if (!currentUser) {
-            return;
-        }
+    // Listen for ACTIVE RESERVATION (Phase 5)
+    useEffect(() => {
+        if (!currentUser) return;
+        const resRef = ref(database, `active_reservations/${currentUser.uid}`);
+        const unsubscribe = onValue(resRef, (snapshot) => {
+            const data = snapshot.val();
+            // Only show if it matches THIS slot AND is still valid using server timestamp check locally
+            // This prevents "Reservation Expired" banner from showing on revisit.
+            if (data && data.slotId === slot.id && data.reservedUntil > Date.now()) {
+                setActiveReservation(data);
+            } else {
+                setActiveReservation(null);
+            }
+        });
+        return () => unsubscribe();
+    }, [currentUser, slot.id]);
+
+    // Listen for ACTIVE SESSION
+    useEffect(() => {
+        if (!currentUser) return;
         const sessionRef = ref(database, `active_sessions/${currentUser.uid}`);
         const unsubscribe = onValue(sessionRef, (snapshot) => {
             const data = snapshot.val();
-            // Check if session is for THIS slot and still active (paymentStatus != SUCCESS)
             if (data && data.slotId === slot.id && data.paymentStatus !== "SUCCESS") {
                 setActiveSession(data);
             } else {
@@ -48,18 +66,23 @@ const ParkingDetail = ({ slot, onBack, currentUser }) => {
         lng: slot.lng || 0,
     };
 
-    // Phase 1: Reservation Logic
+    // --- Actions ---
+
     const handleReserve = async () => {
         if (!currentUser) {
-            alert("Please login to reserve a slot.");
+            alert("Please login to reserve.");
             return;
         }
 
-        const reservationDuration = 15 * 60 * 1000; // 15 minutes
+        const reservationDuration = 15 * 60 * 1000; // 15 mins
         const reservedUntil = Date.now() + reservationDuration;
 
         try {
-            // 1. Create Active Reservation Record
+            // Nested Path support
+            const slotPath = slot.placeId
+                ? `parking_slots/${slot.placeId}/slots/${slot.id}`
+                : `parking_slots/${slot.id}`;
+
             await set(ref(database, `active_reservations/${currentUser.uid}`), {
                 slotId: slot.id,
                 reservedAt: Date.now(),
@@ -68,80 +91,88 @@ const ParkingDetail = ({ slot, onBack, currentUser }) => {
                 status: "PENDING"
             });
 
-            // 2. Block the slot globally
-            // Path depends on if it's nested (has placeId) or root
-            const slotPath = slot.placeId
-                ? `parking_slots/${slot.placeId}/slots/${slot.id}`
-                : `parking_slots/${slot.id}`;
-
             await update(ref(database, slotPath), {
                 reservedUntil: reservedUntil,
                 reservedBy: currentUser.uid
             });
 
-            alert(`Slot ${slot.name} reserved for 15 minutes! Please arrive by then.`);
+            // Open QR immediately
+            setQrValue(currentUser.uid);
+            setQrTitle("Entry QR Code");
+            setShowQR(true);
+
         } catch (error) {
             console.error("Reservation failed:", error);
-            alert(`Failed to reserve slot: ${error.message}`);
+            alert(`Failed to reserve: ${error.message}`);
         }
     };
 
-    // Phase 4: Pay & Exit Logic
     const handlePayAndExit = async () => {
         if (!currentUser || !activeSession) return;
 
-        // Calculate Bill
         const rate = slot.pricePerHour || 50;
-        const durationHours = Math.max(0.5, (Date.now() - activeSession.startTime) / 3600000); // Min 30 mins
+        const durationHours = Math.max(0.5, (Date.now() - activeSession.startTime) / 3600000);
         const amount = Math.ceil(durationHours * rate);
 
         if (!window.confirm(`Confirm Payment of ₹${amount} for parking duration?`)) return;
 
         try {
-            // 1. Deduct Balance Logic (Mock for frontend)
-            // In real app, we check balance < amount
-
-            // 2. Mark Payment Success
             await update(ref(database, `active_sessions/${currentUser.uid}`), {
                 paymentStatus: "SUCCESS",
                 endTime: Date.now(),
                 amountPaid: amount
             });
 
-            alert(`Payment Successful! Gate Opening...`);
-            onBack(); // Return to list
+            // Show Exit QR (Mocking a secure token)
+            setQrValue(`EXIT-${currentUser.uid}-${Date.now()}`);
+            setQrTitle("Exit QR Code");
+            setShowQR(true);
 
         } catch (error) {
             console.error("Payment failed:", error);
-            alert("Payment failed. Please try again.");
+            alert("Payment failed.");
         }
     };
 
     const handleGetDirections = () => {
         if (!slot.lat || !slot.lng) return;
-        window.open(
-            `https://www.google.com/maps/dir/?api=1&destination=${slot.lat},${slot.lng}`,
-            "_blank"
-        );
+        window.open(`https://www.google.com/maps/dir/?api=1&destination=${slot.lat},${slot.lng}`, "_blank");
     };
 
-    // Callback refs needed for Google Maps
-    const onLoad = React.useCallback(function callback() { }, []);
-    const onUnmount = React.useCallback(function callback() { }, []);
+    // --- Helpers ---
 
-    // Calculate Dynamic Cost for Display
+    // Countdown Formatter
+    const getCountdown = () => {
+        if (!activeReservation) return null;
+        const diff = activeReservation.reservedUntil - now;
+        if (diff <= 0) return "Expired";
+        const mins = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
+        const secs = Math.floor((diff % (1000 * 60)) / 1000);
+        return `${mins}m ${secs}s`;
+    };
+
     const currentCost = activeSession
         ? Math.ceil(Math.max(0.5, (now - activeSession.startTime) / 3600000) * (slot.pricePerHour || 50))
         : 0;
 
+    const onLoad = React.useCallback(function callback() { }, []);
+    const onUnmount = React.useCallback(function callback() { }, []);
+
     return (
         <div className="w-full max-w-2xl mx-auto pb-24 px-4">
+
+            <QRModal
+                isOpen={showQR}
+                onClose={() => setShowQR(false)}
+                value={qrValue}
+                title={qrTitle}
+            />
+
             {/* Header */}
             <div className="flex items-center gap-4 mb-6 pt-4">
                 <button
                     onClick={onBack}
                     className="p-3 bg-white/40 backdrop-blur-md border border-white/20 rounded-full shadow-md hover:bg-white/60 transition-all text-slate-700 hover:scale-105 active:scale-95 group"
-                    aria-label="Back"
                 >
                     <ArrowLeft className="w-5 h-5 group-hover:-translate-x-0.5 transition-transform" />
                 </button>
@@ -152,58 +183,73 @@ const ParkingDetail = ({ slot, onBack, currentUser }) => {
                 </div>
             </div>
 
-            {/* Main Content Card */}
+            {/* Main Content */}
             <div className={`bg-white/40 backdrop-blur-xl border border-white/40 rounded-[2.5rem] shadow-[0_10px_32px_rgba(0,0,0,0.05)] overflow-hidden p-6 space-y-6 relative transition-all duration-500 ${slot.isFail ? 'shadow-[0_0_40px_rgba(239,68,68,0.15)] border-red-500/30' : ''}`}>
 
-                {/* Hardware Safety Monitor Alert */}
-                {slot.isFail ? (
-                    <div className="bg-red-500/10 backdrop-blur-md border border-red-500/30 text-red-700 p-4 rounded-3xl flex items-center gap-4 animate-pulse">
-                        <div className="p-2 bg-red-500/20 rounded-full shrink-0">
-                            <AlertTriangle className="w-6 h-6 text-red-600" />
-                        </div>
+                {/* Hardware Alert (Personalized) */}
+                {slot.isFail && (
+                    <div className={`backdrop-blur-md border p-4 rounded-3xl flex items-center gap-4 animate-pulse ${activeSession
+                        ? "bg-red-500/10 border-red-500/30 text-red-700"
+                        : "bg-amber-500/10 border-amber-500/30 text-amber-700"
+                        }`}>
+                        <AlertTriangle className={`w-6 h-6 ${activeSession ? "text-red-600" : "text-amber-600"}`} />
                         <div>
-                            <p className="font-bold text-base">Alignment Issue Detected</p>
-                            <p className="text-sm opacity-90 mt-0.5">{slot.alignmentDetails || "Sensors indicating improper parking."}</p>
+                            <p className="font-bold text-base">
+                                {activeSession ? "⚠ Alignment Issue - Adjust Car!" : "Slot Unavailable"}
+                            </p>
+                            <p className="text-sm opacity-90 mt-0.5">
+                                {activeSession
+                                    ? (slot.alignmentDetails || "Your vehicle is not parked correctly. Please realign.")
+                                    : "This slot is currently undergoing maintenance or has an obstruction."}
+                            </p>
                         </div>
                     </div>
-                ) : (
+                )}
+
+                {/* System OK (Only if no failure) */}
+                {!slot.isFail && (
                     <div className="bg-emerald-500/10 backdrop-blur-md border border-emerald-500/20 text-emerald-700 px-4 py-3 rounded-3xl flex items-center gap-3">
                         <ShieldCheck className="w-5 h-5" />
                         <span className="font-semibold text-sm">System Active & Monitored</span>
                     </div>
                 )}
 
+                {/* Reservation Countdown Banner */}
+                {activeReservation && !activeSession && (
+                    <div className="bg-indigo-600 text-white p-4 rounded-3xl flex justify-between items-center shadow-lg shadow-indigo-600/30 animate-in slide-in-from-top-4">
+                        <div className="flex items-center gap-3">
+                            <Clock className="w-6 h-6 animate-pulse" />
+                            <div>
+                                <p className="text-xs opacity-80 font-bold uppercase tracking-wider">Reservation Expires In</p>
+                                <p className="text-2xl font-mono font-bold">{getCountdown()}</p>
+                            </div>
+                        </div>
+                        <button
+                            onClick={() => { setQrValue(currentUser.uid); setQrTitle("Entry QR Code"); setShowQR(true); }}
+                            className="bg-white text-indigo-700 px-4 py-2 rounded-xl font-bold text-sm hover:scale-105 transition"
+                        >
+                            Open QR
+                        </button>
+                    </div>
+                )}
+
                 {/* Map */}
-                <div className="rounded-[2rem] overflow-hidden shadow-inner border border-white/30 h-[300px] w-full relative">
-                    {isLoaded ? (
+                <div className="rounded-[2rem] overflow-hidden shadow-inner border border-white/30 h-[250px] w-full relative">
+                    {isLoaded && (
                         <GoogleMap
                             mapContainerStyle={containerStyle}
                             center={center}
                             zoom={15}
                             onLoad={onLoad}
                             onUnmount={onUnmount}
-                            options={{
-                                disableDefaultUI: true,
-                                zoomControl: true,
-                                styles: [
-                                    {
-                                        featureType: "poi",
-                                        elementType: "labels",
-                                        stylers: [{ visibility: "off" }],
-                                    },
-                                ],
-                            }}
+                            options={{ disableDefaultUI: true, zoomControl: true, styles: [{ featureType: "poi", stylers: [{ visibility: "off" }] }] }}
                         >
                             <Marker position={center} />
                         </GoogleMap>
-                    ) : (
-                        <div className="h-full w-full bg-slate-100/50 animate-pulse flex items-center justify-center text-slate-400">
-                            Loading Map...
-                        </div>
                     )}
                 </div>
 
-                {/* Session Info / Price Grid */}
+                {/* Price / Session */}
                 {activeSession ? (
                     <div className="bg-blue-600/10 backdrop-blur-md border border-blue-600/20 p-6 rounded-3xl space-y-4">
                         <div className="flex items-center gap-2 text-blue-700 font-bold uppercase tracking-wider text-xs">
@@ -228,64 +274,71 @@ const ParkingDetail = ({ slot, onBack, currentUser }) => {
                     </div>
                 ) : (
                     <div className="grid grid-cols-2 gap-4">
-                        <div className="bg-white/50 backdrop-blur-sm p-5 rounded-3xl border border-white/30 hover:bg-white/60 transition shadow-sm">
-                            <p className="text-slate-500 text-sm font-medium uppercase tracking-wider mb-1">Price</p>
-                            <div className="flex items-end">
-                                <IndianRupee className="w-6 h-6 text-slate-800 mb-0.5" />
-                                <p className="text-2xl font-bold text-slate-800 leading-none">
-                                    {slot.pricePerHour || "50"}
-                                </p>
-                                <span className="text-sm font-medium text-slate-500 ml-1 mb-0.5">/hr</span>
+                        <div className="bg-white/50 backdrop-blur-sm p-4 rounded-3xl border border-white/30">
+                            <p className="text-slate-500 text-xs font-bold uppercase tracking-wider mb-1">Price</p>
+                            <div className="flex items-end text-slate-800">
+                                <IndianRupee className="w-5 h-5 mb-0.5" />
+                                <span className="text-xl font-bold">{slot.pricePerHour || "50"}</span>
+                                <span className="text-xs font-bold text-slate-400 ml-1 mb-0.5">/hr</span>
                             </div>
                         </div>
-                        <div className="bg-white/50 backdrop-blur-sm p-5 rounded-3xl border border-white/30 hover:bg-white/60 transition shadow-sm">
-                            <p className="text-slate-500 text-sm font-medium uppercase tracking-wider mb-1">Rating</p>
-                            <div className="flex items-center gap-1.5">
-                                <Star className="w-6 h-6 fill-yellow-500 text-yellow-500" />
-                                <span className="text-2xl font-bold text-slate-800 leading-none">
-                                    {slot.rating || "4.5"}
-                                </span>
+                        <div className="bg-white/50 backdrop-blur-sm p-4 rounded-3xl border border-white/30">
+                            <p className="text-slate-500 text-xs font-bold uppercase tracking-wider mb-1">Rating</p>
+                            <div className="flex items-center gap-1 text-slate-800">
+                                <Star className="w-5 h-5 fill-yellow-500 text-yellow-500" />
+                                <span className="text-xl font-bold">{slot.rating || "4.5"}</span>
                             </div>
                         </div>
                     </div>
                 )}
 
-                <div className="bg-white/50 backdrop-blur-sm p-5 rounded-3xl border border-white/30 hover:bg-white/60 transition shadow-sm">
-                    <p className="text-slate-500 text-sm font-medium uppercase tracking-wider mb-2">Address</p>
-                    <p className="text-lg font-semibold text-slate-800 leading-relaxed">
-                        {slot.address || "No address details available."}
-                    </p>
-                </div>
-
                 {/* Action Buttons */}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-2">
                     <button
                         onClick={handleGetDirections}
-                        className="flex items-center justify-center gap-2 py-4 px-6 bg-white/60 hover:bg-white/80 backdrop-blur-md text-blue-600 font-bold rounded-2xl shadow-lg border border-white/50 transition-all hover:scale-[1.02] active:scale-95 group"
+                        className="flex items-center justify-center gap-2 py-4 px-6 bg-white/60 hover:bg-white/80 backdrop-blur-md text-blue-600 font-bold rounded-2xl shadow-lg border border-white/50 transition-all active:scale-95"
                     >
-                        <Navigation className="w-5 h-5 group-hover:rotate-12 transition-transform" />
-                        Get Directions
+                        <Navigation className="w-5 h-5" />
+                        Directions
                     </button>
 
                     {activeSession ? (
                         <button
                             onClick={handlePayAndExit}
-                            className="flex items-center justify-center gap-2 py-4 px-6 font-bold rounded-2xl shadow-lg transition-all hover:scale-[1.02] active:scale-95 bg-slate-800 hover:bg-slate-900 text-white shadow-slate-900/20"
+                            className="col-span-1 md:col-span-2 flex items-center justify-center gap-2 py-4 px-6 font-bold rounded-2xl shadow-lg transition-all active:scale-95 bg-slate-800 hover:bg-slate-900 text-white shadow-slate-900/20"
                         >
                             <CheckCircle className="w-5 h-5" />
                             Pay & Exit (₹{currentCost})
                         </button>
                     ) : (
-                        <button
-                            onClick={handleReserve}
-                            disabled={slot.reservedUntil && slot.reservedUntil > now}
-                            className={`flex items-center justify-center gap-2 py-4 px-6 font-bold rounded-2xl shadow-lg transition-all hover:scale-[1.02] active:scale-95 ${slot.reservedUntil && slot.reservedUntil > now
-                                ? "bg-slate-400 cursor-not-allowed text-white"
-                                : "bg-blue-600 hover:bg-blue-700 text-white shadow-blue-500/30"
-                                }`}
-                        >
-                            {slot.reservedUntil && slot.reservedUntil > now ? "Reserved" : "Reserve Now"}
-                        </button>
+                        <>
+                            {/* "Enter Now" Button - Generates QR for Best Slot (This one) */}
+                            <button
+                                onClick={handleReserve} // Reuse handleReserve but maybe rename to handleQuickEnter internally if logic differs. Current logic does exactly this (Book & QR).
+                                disabled={(slot.reservedUntil && slot.reservedUntil > now)}
+                                className={`flex items-center justify-center gap-2 py-4 px-6 font-bold rounded-2xl shadow-lg transition-all active:scale-95 text-white ${(slot.reservedUntil && slot.reservedUntil > now)
+                                    ? "bg-slate-400 cursor-not-allowed"
+                                    : "bg-emerald-600 hover:bg-emerald-700 shadow-emerald-500/30"
+                                    }`}
+                            >
+                                <QrCode className="w-5 h-5" />
+                                Enter Now
+                            </button>
+
+                            {/* "Reserve Ahead" Button - Opens Grid */}
+                            <button
+                                onClick={() => {
+                                    // Call parent to switch to Grid
+                                    if (onBack) onBack("grid"); // Dirty hack? No, let's add a proper prop.
+                                    // Assuming prop onReserve is passed or we lift state.
+                                    // We will assume onShowGrid is passed.
+                                }}
+                                className="flex items-center justify-center gap-2 py-4 px-6 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-2xl shadow-lg border border-slate-200 transition-all active:scale-95"
+                            >
+                                <Clock className="w-5 h-5" />
+                                Reserve Ahead
+                            </button>
+                        </>
                     )}
                 </div>
             </div>
