@@ -6,6 +6,7 @@ import { Star, MapPin, IndianRupee } from "lucide-react";
 const ParkingList = ({ userLoc, onSelect }) => {
   const [parkingSlots, setParkingSlots] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [dbError, setDbError] = useState("");
 
   // Haversine formula
   const calculateDistance = (lat1, lon1, lat2, lon2) => {
@@ -29,26 +30,56 @@ const ParkingList = ({ userLoc, onSelect }) => {
       const data = snapshot.val();
       console.log("DEBUG: Firebase Snapshot:", data); // Debug Log
       if (data) {
-        const loadedSlots = Object.keys(data).map((key) => {
-          const slot = data[key];
+        let allSlots = [];
 
-          // Calculate availability based on status or reservation
-          const now = Date.now();
-          const isReserved = slot.reservedUntil && slot.reservedUntil > now;
-          const isAvailable = !isReserved && slot.status === "FREE";
+        // Iterate over Places (place_A, place_B) or plain slots
+        Object.keys(data).forEach((key) => {
+          const item = data[key];
 
-          const dist = userLoc
-            ? calculateDistance(userLoc.lat, userLoc.lng, slot.lat, slot.lng)
-            : Infinity;
+          // CHECK: Is this a Place with nested slots?
+          if (item.slots) {
+            const place = item;
+            Object.keys(place.slots).forEach((slotKey) => {
+              const slot = place.slots[slotKey];
+              // Calculate availability
+              const now = Date.now();
+              const isReserved = slot.reservedUntil && slot.reservedUntil > now;
+              const isAvailable = !isReserved && slot.status === "FREE";
 
-          return {
-            id: key,
-            ...slot,
-            isAvailable: isAvailable,
-            distance: dist
-          };
+              const dist = userLoc
+                ? calculateDistance(userLoc.lat, userLoc.lng, slot.lat, slot.lng)
+                : Infinity;
+
+              allSlots.push({
+                id: slotKey,
+                ...slot,
+                address: slot.address || place.address,
+                isAvailable: isAvailable,
+                distance: dist,
+                placeName: place.name,
+                placeId: key
+              });
+            });
+          } else {
+            // FALLBACK: Old structure (flat slots)
+            const slot = item;
+            const now = Date.now();
+            const isReserved = slot.reservedUntil && slot.reservedUntil > now;
+            const isAvailable = !isReserved && slot.status === "FREE";
+            const dist = userLoc
+              ? calculateDistance(userLoc.lat, userLoc.lng, slot.lat, slot.lng)
+              : Infinity;
+
+            allSlots.push({
+              id: key,
+              ...slot,
+              isAvailable: isAvailable,
+              distance: dist
+            });
+          }
         });
-        const sortedSlots = loadedSlots.sort((a, b) => a.distance - b.distance);
+
+        const sortedSlots = allSlots.sort((a, b) => a.distance - b.distance);
         setParkingSlots(sortedSlots);
       } else {
         setParkingSlots([]);
@@ -60,8 +91,6 @@ const ParkingList = ({ userLoc, onSelect }) => {
       setLoading(false);
     });
   }, [userLoc]);
-
-  const [dbError, setDbError] = useState("");
 
   if (loading) {
     return (
@@ -109,6 +138,11 @@ const ParkingList = ({ userLoc, onSelect }) => {
                   <MapPin className="w-3.5 h-3.5" />
                   <span className="truncate max-w-[200px]">{slot.address || "No address provided"}</span>
                 </div>
+                {slot.placeName && (
+                  <div className="text-xs text-slate-400 font-medium mt-1 uppercase tracking-wide">
+                    {slot.placeName}
+                  </div>
+                )}
               </div>
               <div className="bg-white/70 backdrop-blur-md border border-white/50 px-3 py-1 rounded-full text-xs font-bold text-slate-700 shadow-sm">
                 {slot.distance !== Infinity ? `${slot.distance.toFixed(1)} km` : "N/A"}
@@ -129,8 +163,8 @@ const ParkingList = ({ userLoc, onSelect }) => {
 
             {/* Status Badge */}
             <div className={`absolute top-0 right-0 px-4 py-1 rounded-bl-3xl text-[10px] font-bold uppercase tracking-wider ${slot.isAvailable
-              ? "bg-emerald-500/80 text-white backdrop-blur-md"
-              : "bg-red-500/80 text-white backdrop-blur-md"
+                ? "bg-emerald-500/80 text-white backdrop-blur-md"
+                : "bg-red-500/80 text-white backdrop-blur-md"
               }`}>
               {slot.isAvailable ? "Open" : "Full"}
             </div>
