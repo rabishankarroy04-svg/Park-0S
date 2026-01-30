@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { onAuthStateChanged } from "firebase/auth";
+import { onAuthStateChanged, getRedirectResult } from "firebase/auth";
 import { ref, onValue } from "firebase/database";
 import { auth } from "./firebase";
 import database from "./firebase";
@@ -27,18 +27,28 @@ function App() {
 
   // Auth Listener
   useEffect(() => {
+    console.log("🔧 Setting up auth state listener...");
     const unsubscribe = onAuthStateChanged(auth, (user) => {
+      console.log("🔔 Auth state changed!");
       if (user) {
+        console.log("✅ User logged in:");
+        console.log("  - Email:", user.email);
+        console.log("  - UID:", user.uid);
+        console.log("  - Display Name:", user.displayName);
+
         setCurrentUser(user);
+
         // Fetch User Data (Wallet)
         const userRef = ref(database, `users/${user.uid}`);
         onValue(userRef, (snapshot) => {
           const data = snapshot.val();
+          console.log("💰 Wallet data:", data);
           if (data && data.walletBalance) {
             setWalletBalance(data.walletBalance);
           }
         });
       } else {
+        console.log("❌ User logged out");
         setCurrentUser(null);
         setWalletBalance(0);
         setCurrentView('home'); // Reset view on logout
@@ -47,23 +57,88 @@ function App() {
     return () => unsubscribe();
   }, []);
 
+  // Handle redirect result (for mobile login)
+  useEffect(() => {
+    console.log("🔍 Checking for redirect result...");
+    const handleRedirectResult = async () => {
+      try {
+        setIsSearching(true); // Show loading while processing
+        const result = await getRedirectResult(auth);
+
+        if (result) {
+          // User successfully signed in via redirect
+          console.log("✅ Redirect login successful!");
+          console.log("User email:", result.user.email);
+          console.log("User UID:", result.user.uid);
+          console.log("User display name:", result.user.displayName);
+
+          // The onAuthStateChanged listener will handle the rest
+        } else {
+          console.log("ℹ️ No redirect result (user didn't just complete redirect login)");
+        }
+      } catch (error) {
+        console.error("❌ Redirect sign-in error:", error);
+        console.error("Error code:", error.code);
+        console.error("Error message:", error.message);
+        console.error("Full error:", JSON.stringify(error, null, 2));
+
+        if (error.code !== 'auth/no-redirect-result') {
+          const errorMessage = error.code === 'auth/unauthorized-domain'
+            ? "⚠️ Domain not authorized in Firebase. Please add your ngrok domain to Firebase Console → Authentication → Settings → Authorized domains."
+            : error.code === 'auth/popup-closed-by-user'
+              ? "Login cancelled by user."
+              : `Login error: ${error.message}`;
+          setErrorMsg(errorMessage);
+        }
+      } finally {
+        setIsSearching(false);
+      }
+    };
+    handleRedirectResult();
+  }, []);
+
   const getGeolocation = () => {
     setIsSearching(true);
+    setErrorMsg(""); // Clear previous errors
+
     if (!navigator.geolocation) {
       setErrorMsg("Geolocation not supported by your browser.");
+      setIsSearching(false);
+      return;
+    }
+
+    // Check if using HTTPS (required for mobile browsers)
+    if (location.protocol !== 'https:' && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
+      setErrorMsg("⚠️ Location access requires HTTPS on mobile. Please use HTTPS or try on desktop.");
+      setIsSearching(false);
       return;
     }
 
     navigator.geolocation.getCurrentPosition(
       (pos) => {
         setUserLoc({ lat: pos.coords.latitude, lng: pos.coords.longitude });
+        setErrorMsg(""); // Clear error on success
         setIsSearching(false);
       },
-      () => {
-        setErrorMsg("Cant get location. Please check permissions or move to a different area.");
+      (error) => {
+        let errorMessage = "";
+        switch (error.code) {
+          case error.PERMISSION_DENIED:
+            errorMessage = "📍 Location permission denied. Please enable location access in your browser settings.";
+            break;
+          case error.POSITION_UNAVAILABLE:
+            errorMessage = "📍 Location unavailable. Please check your GPS/network connection.";
+            break;
+          case error.TIMEOUT:
+            errorMessage = "📍 Location request timed out. Please try again.";
+            break;
+          default:
+            errorMessage = "📍 Unable to get location. Please check permissions and try again.";
+        }
+        setErrorMsg(errorMessage);
         setIsSearching(false);
       },
-      { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
+      { enableHighAccuracy: true, timeout: 30000, maximumAge: 0 }
     );
   };
 

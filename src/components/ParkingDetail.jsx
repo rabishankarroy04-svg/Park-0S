@@ -107,26 +107,69 @@ const ParkingDetail = ({ slot, onBack, currentUser, onShowGrid }) => {
         }
     };
 
+    const handleEnter = async () => {
+        if (!currentUser) {
+            alert("Please login to enter.");
+            return;
+        }
+
+        try {
+            const now = Date.now();
+            const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+            const entryQR = `${currentUser.uid}|ENTRY|${now}|${today}`;
+
+            // Create active session
+            await set(ref(database, `active_sessions/${currentUser.uid}`), {
+                slotId: slot.id,
+                startTime: now,
+                userId: currentUser.uid,
+                paymentStatus: "PENDING",
+                entryQR: entryQR  // Store for audit
+            });
+
+            // Show entry QR
+            setQrValue(entryQR);
+            setQrTitle("Entry QR Code");
+            setShowQR(true);
+
+            alert("Entry QR generated! Show at gate.");
+
+        } catch (error) {
+            console.error("Entry failed:", error);
+            alert(`Failed to enter: ${error.message}`);
+        }
+    };
+
     const handlePayAndExit = async () => {
         if (!currentUser || !activeSession) return;
 
-        const rate = slot.pricePerHour || 50;
-        const durationHours = Math.max(0.5, (Date.now() - activeSession.startTime) / 3600000);
-        const amount = Math.ceil(durationHours * rate);
+        // Use gateway's rate (₹40/hour) or slot-specific rate
+        const rate = slot.pricePerHour || 40;
+
+        // Prefer gateway-calculated totalDue if available
+        const amount = activeSession.totalDue || Math.ceil(Math.ceil((Date.now() - activeSession.startTime) / 3600000) * rate);
 
         if (!window.confirm(`Confirm Payment of ₹${amount} for parking duration?`)) return;
 
         try {
+            const now = Date.now();
+            const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+            const exitQR = `${currentUser.uid}|EXIT|${now}|${today}`;
+
+            // Mark payment as SUCCESS and store exit QR
             await update(ref(database, `active_sessions/${currentUser.uid}`), {
                 paymentStatus: "SUCCESS",
-                endTime: Date.now(),
-                amountPaid: amount
+                endTime: now,
+                amountPaid: amount,
+                exitQR: exitQR  // Store for gateway validation
             });
 
-            // Show Exit QR (Mocking a secure token)
-            setQrValue(`EXIT-${currentUser.uid}-${Date.now()}`);
-            setQrTitle("Exit QR Code");
+            // Show exit QR
+            setQrValue(exitQR);
+            setQrTitle("Exit QR Code - Show at Gate");
             setShowQR(true);
+
+            alert("Payment successful! Show exit QR at gate.");
 
         } catch (error) {
             console.error("Payment failed:", error);
@@ -151,8 +194,9 @@ const ParkingDetail = ({ slot, onBack, currentUser, onShowGrid }) => {
         return `${mins}m ${secs}s`;
     };
 
+    // Prefer gateway-calculated totalDue, fallback to local calculation
     const currentCost = activeSession
-        ? Math.ceil(Math.max(0.5, (now - activeSession.startTime) / 3600000) * (slot.pricePerHour || 50))
+        ? (activeSession.totalDue || Math.ceil(Math.ceil((now - activeSession.startTime) / 3600000) * (slot.pricePerHour || 40)))
         : 0;
 
     const onLoad = React.useCallback(function callback() { }, []);
@@ -312,9 +356,9 @@ const ParkingDetail = ({ slot, onBack, currentUser, onShowGrid }) => {
                         </button>
                     ) : (
                         <>
-                            {/* "Enter Now" Button - Generates QR for Best Slot (This one) */}
+                            {/* "Enter Now" Button - Creates Active Session */}
                             <button
-                                onClick={handleReserve} // Reuse handleReserve but maybe rename to handleQuickEnter internally if logic differs. Current logic does exactly this (Book & QR).
+                                onClick={handleEnter}
                                 disabled={(slot.reservedUntil && slot.reservedUntil > now)}
                                 className={`flex items-center justify-center gap-2 py-4 px-6 font-bold rounded-2xl shadow-lg transition-all active:scale-95 text-white ${(slot.reservedUntil && slot.reservedUntil > now)
                                     ? "bg-slate-400 cursor-not-allowed"

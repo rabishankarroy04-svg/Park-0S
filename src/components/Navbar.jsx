@@ -1,19 +1,13 @@
 import { useState } from "react";
 import { Menu, Wallet as WalletIcon, User, Home, Clock, LogOut, X } from "lucide-react";
-import { signInWithPopup, signOut } from "firebase/auth";
-import { auth, googleProvider } from "../firebase";
+import { signOut } from "firebase/auth";
+import { auth } from "../firebase";
+import LoginForm from "./LoginForm";
 
 
 const Navbar = ({ onNavigate, currentUser, walletBalance, currentView }) => {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
-
-  const handleLogin = async () => {
-    try {
-      await signInWithPopup(auth, googleProvider);
-    } catch (error) {
-      console.error("Login failed", error);
-    }
-  };
+  const [showLogin, setShowLogin] = useState(false);
 
   const handleLogout = async () => {
     try {
@@ -34,6 +28,8 @@ const Navbar = ({ onNavigate, currentUser, walletBalance, currentView }) => {
 
   return (
     <>
+      {showLogin && <LoginForm onClose={() => setShowLogin(false)} />}
+
       <nav className="fixed top-0 left-0 w-full z-40 h-20 bg-white/60 backdrop-blur-md border-b border-white/20 flex items-center justify-between px-4 md:px-10 shadow-sm transition-all duration-300">
         {/* Logo */}
         <div
@@ -63,7 +59,7 @@ const Navbar = ({ onNavigate, currentUser, walletBalance, currentView }) => {
             </button>
           ) : (
             <button
-              onClick={handleLogin}
+              onClick={() => setShowLogin(true)}
               className="px-5 py-2 bg-slate-900 text-white rounded-full font-semibold shadow-lg hover:bg-slate-800 transition active:scale-95 flex items-center gap-2"
             >
               <User className="w-4 h-4" />
