@@ -74,32 +74,38 @@ const ParkingDetail = ({ slot, onBack, currentUser, onShowGrid }) => {
             return;
         }
 
-        const reservationDuration = 15 * 60 * 1000; // 15 mins
-        const reservedUntil = Date.now() + reservationDuration;
+        // Check if slot is available
+        if (slot.status === "OCCUPIED" || (slot.reservedUntil && slot.reservedUntil > Date.now())) {
+            alert("This slot is not available for reservation.");
+            return;
+        }
 
         try {
-            // Nested Path support
-            const slotPath = slot.placeId
-                ? `parking_slots/${slot.placeId}/slots/${slot.id}`
-                : `parking_slots/${slot.id}`;
+            const now = Date.now();
+            const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+            const reserveQR = `${currentUser.uid}|RESERVE|${now}|${today}`;
 
+            // Create active reservation
             await set(ref(database, `active_reservations/${currentUser.uid}`), {
                 slotId: slot.id,
-                reservedAt: Date.now(),
-                reservedUntil: reservedUntil,
+                reservationTime: now,
                 userId: currentUser.uid,
-                status: "PENDING"
+                status: "RESERVED",
+                reserveQR: reserveQR
             });
 
-            await update(ref(database, slotPath), {
-                reservedUntil: reservedUntil,
+            // Mark slot as reserved (15 min expiry)
+            await update(ref(database, `parking_slots/${slot.id}`), {
+                reservedUntil: now + 15 * 60 * 1000, // 15 minutes
                 reservedBy: currentUser.uid
             });
 
-            // Open QR immediately
-            setQrValue(currentUser.uid);
-            setQrTitle("Entry QR Code");
+            // Show reservation QR
+            setQrValue(reserveQR);
+            setQrTitle("Reservation QR Code");
             setShowQR(true);
+
+            alert("Reservation successful! You have 15 minutes. Show QR at gate to enter.");
 
         } catch (error) {
             console.error("Reservation failed:", error);
@@ -387,16 +393,11 @@ const ParkingDetail = ({ slot, onBack, currentUser, onShowGrid }) => {
 
                             {/* "Reserve Ahead" Button - Opens Grid */}
                             <button
-                                onClick={() => {
-                                    // Call parent to switch to Grid
-                                    if (onBack) onBack("grid"); // Dirty hack? No, let's add a proper prop.
-                                    // Assuming prop onReserve is passed or we lift state.
-                                    // We will assume onShowGrid is passed.
-                                }}
-                                className="flex items-center justify-center gap-2 py-4 px-6 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-2xl shadow-lg border border-slate-200 transition-all active:scale-95"
+                                onClick={handleReserve}
+                                className="flex items-center justify-center gap-2 py-4 px-4 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-2xl shadow-lg border border-slate-200 transition-all active:scale-95"
                             >
                                 <Clock className="w-5 h-5" />
-                                Reserve Ahead
+                                Reserve
                             </button>
                         </>
                     )}

@@ -65,7 +65,47 @@ def handle_qr_logic(qr_data):
         
         print(f"\n📱 QR Scanned: {mode} | User: {uid[:8]}... | Date: {qr_date}")
         
-        if mode == "ENTRY":
+        if mode == "RESERVE":
+            # === RESERVATION → ACTIVE SESSION CONVERSION ===
+            reservation_ref = db.reference(f'active_reservations/{uid}')
+            reservation = reservation_ref.get()
+            
+            if not reservation:
+                print(f"❌ RESERVE DENIED: No active reservation found")
+                return
+            
+            # Verify reservation QR matches
+            stored_reserve_qr = reservation.get('reserveQR')
+            if stored_reserve_qr != qr_data:
+                print(f"❌ RESERVE DENIED: QR mismatch")
+                print(f"   Expected: {stored_reserve_qr}")
+                print(f"   Scanned: {qr_data}")
+                return
+            
+            # Check if reservation is still valid (15 min window)
+            reservation_time = reservation.get('reservationTime')
+            if now - reservation_time > 15 * 60 * 1000:  # 15 minutes
+                print(f"❌ RESERVE DENIED: Reservation expired")
+                reservation_ref.delete()
+                return
+            
+            # Convert reservation to active session
+            session_ref = db.reference(f'active_sessions/{uid}')
+            session_ref.set({
+                'slotId': reservation.get('slotId'),
+                'startTime': now,
+                'userId': uid,
+                'paymentStatus': 'PENDING',
+                'entryQR': qr_data  # Store the QR for audit
+            })
+            
+            # Delete reservation
+            reservation_ref.delete()
+            
+            trigger_gate()
+            print(f"✅ RESERVATION ACTIVATED: Converted to active session")
+        
+        elif mode == "ENTRY":
             # === ENTRY FLOW ===
             if session:
                 # Session exists - check if this is the matching entry QR
