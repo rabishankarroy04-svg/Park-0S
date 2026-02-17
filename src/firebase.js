@@ -11,8 +11,13 @@ const firebaseConfig = {
   appId: "1:237978565830:web:3649f743256788db646bc7"
 };
 
+import { getAuth, GoogleAuthProvider } from "firebase/auth";
+
 // Initialize Firebase
 const app = initializeApp(firebaseConfig);
 const database = getDatabase(app);
+const auth = getAuth(app);
+const googleProvider = new GoogleAuthProvider();
 
+export { auth, googleProvider };
 export default database;

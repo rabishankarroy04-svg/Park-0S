@@ -10,7 +10,7 @@ const containerStyle = {
 
 const MapView = () => {
   const [parkingData, setParkingData] = useState([]);
-  const [center, setCenter] = useState({ lat: 22.5726, lng: 88.3639 }); // Default Kolkata
+  const [center] = useState({ lat: 22.5726, lng: 88.3639 }); // Default Kolkata
 
   const { isLoaded, loadError } = useJsApiLoader({
     googleMapsApiKey: "AIzaSyBZ6hORn9aGpBdcKVewYlAVDkc1ZpnLuFk"
